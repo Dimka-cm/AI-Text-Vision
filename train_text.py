@@ -22,13 +22,13 @@ from textvis.render_text import LINE_H, MAX_W, render_line, to_fixed
 from textvis.vocab import LABEL_ID, N_LABELS, decode, encode
 
 
-def collect(n, rng, width=MAX_W, verbose=True):
+def collect(n, rng, width=MAX_W, verbose=True, split="train"):
     """Собирает n строк с подписями."""
     X = np.zeros((n, LINE_H, width, 3), np.uint8)
     texts, apps, labels = [], [], np.zeros(n, np.int64)
     t0 = time.time()
     for i in range(n):
-        s = render_line(rng)
+        s = render_line(rng, split=split)
         X[i] = to_fixed(s, width)
         texts.append(s.text)
         apps.append(s.app)
@@ -95,10 +95,18 @@ def main() -> int:
           f"{LINE_H * MAX_W * 3 / 1024:.0f} КБ)")
 
     rng = np.random.default_rng(args.seed)
-    X, texts, apps, labels = collect(args.samples, rng)
+    X, texts, apps, labels = collect(args.samples, rng, split="train")
+    # Две проверочные выборки. «Знакомая» — из тех же слов, что в обучении:
+    # она показывает, запомнила ли модель. «Новая» — из отложенных 51 слова
+    # и других шаблонов имён, которых сеть не видела ни разу: только она
+    # говорит, умеет ли модель ЧИТАТЬ. В прошлом прогоне была лишь первая,
+    # потому потеря и упала до 0.0067 при неизвестном реальном качестве.
     Xte, tte, ate, lte = collect(args.test_samples,
                                  np.random.default_rng(args.seed + 999),
-                                 verbose=False)
+                                 split="train", verbose=False)
+    Xnew, tnew, anew, lnew = collect(args.test_samples,
+                                     np.random.default_rng(args.seed + 555),
+                                     split="test", verbose=False)
 
     model = TextReader()
     print(f"параметров: {sum(p.numel() for p in model.parameters()):,}")
@@ -133,47 +141,65 @@ def main() -> int:
         if args.eval_every and (ep % args.eval_every == 0
                                 or ep == args.epochs):
             r = evaluate(model, Xte, tte, lte, args.batch)
-            line += (f"  | точно {r['exact'] * 100:.1f}%  "
-                     f"символы {r['chars'] * 100:.1f}%")
-            curve.append({"epoch": ep, "loss": tot / len(X), **r})
+            rn = evaluate(model, Xnew, tnew, lnew, args.batch)
+            line += (f"  | знакомые {r['exact'] * 100:.1f}%  "
+                     f"НОВЫЕ {rn['exact'] * 100:.1f}%  "
+                     f"символы {rn['chars'] * 100:.1f}%")
+            curve.append({"epoch": ep, "loss": tot / len(X),
+                          "seen": r, "new": rn})
         print(line, flush=True)
+        if args.eval_every and (ep % args.eval_every == 0
+                                or ep == args.epochs):
+            # Сохраняем после каждой проверки. Прошлый прогон писал веса
+            # только в самом конце: когда его остановили на 9-й эпохе из 30,
+            # полтора часа счёта пропали целиком, а в артефакте остался
+            # один лог. Больше так не теряем.
+            torch.save({"state": model.state_dict(), "epoch": ep,
+                        "curve": curve}, args.out)
 
     rep = evaluate(model, Xte, tte, lte, args.batch)
-    # разбивка по программам
+    rep_new = evaluate(model, Xnew, tnew, lnew, args.batch)
     by_app = {}
-    for a in sorted(set(ate)):
-        sel = [i for i, x in enumerate(ate) if x == a]
-        sub = evaluate(model, Xte[sel], [tte[i] for i in sel], lte[sel],
-                       args.batch)
-        by_app[a] = sub
+    for a in sorted(set(anew)):
+        sel = [i for i, x in enumerate(anew) if x == a]
+        by_app[a] = evaluate(model, Xnew[sel], [tnew[i] for i in sel],
+                             lnew[sel], args.batch)
 
-    print("\n" + "=" * 62)
+    print("\n" + "=" * 64)
     print("ЧТО МОДЕЛЬ НАУЧИЛАСЬ ЧИТАТЬ")
-    print("=" * 62)
-    print(f"{'программа':14s} {'строка целиком':>15s} {'символы':>10s} "
-          f"{'подпись':>10s}")
-    print("-" * 62)
+    print("=" * 64)
+    print(f"{'выборка':34s} {'строки':>10s} {'символы':>10s}")
+    print("-" * 64)
+    print(f"{'знакомые слова (была в обучении)':34s} "
+          f"{rep['exact'] * 100:9.1f}% {rep['chars'] * 100:9.1f}%")
+    print(f"{'НОВЫЕ слова (не видела ни разу)':34s} "
+          f"{rep_new['exact'] * 100:9.1f}% {rep_new['chars'] * 100:9.1f}%")
+    print("-" * 64)
+    gap = (rep['exact'] - rep_new['exact']) * 100
+    print(f"разрыв: {gap:.1f} процентных пункта", end="  ")
+    print("(большой разрыв = зубрёжка, а не чтение)")
+    print("\nНОВЫЕ СЛОВА ПО ПРОГРАММАМ")
+    print("-" * 64)
     for a, r in by_app.items():
-        print(f"{a:14s} {r['exact'] * 100:14.1f}% {r['chars'] * 100:9.1f}% "
-              f"{r['label'] * 100:9.1f}%")
-    print("-" * 62)
-    print(f"{'ВСЕГО':14s} {rep['exact'] * 100:14.1f}% "
-          f"{rep['chars'] * 100:9.1f}% {rep['label'] * 100:9.1f}%")
-    print("=" * 62)
+        print(f"  {a:14s} строки {r['exact'] * 100:6.1f}%   "
+              f"символы {r['chars'] * 100:6.1f}%")
+    print("=" * 64)
 
-    print("\nПРИМЕРЫ ЧТЕНИЯ:")
+    print("\nПРИМЕРЫ ЧТЕНИЯ (строки, которых модель не видела):")
     model.eval()
     with torch.no_grad():
         xb = torch.from_numpy(
-            Xte[:12].transpose(0, 3, 1, 2)).float().div_(255.)
+            Xnew[:14].transpose(0, 3, 1, 2)).float().div_(255.)
         got = model.read(xb)
-    for g, w in zip(got, tte[:12]):
+    for g, w in zip(got, tnew[:14]):
         mark = "верно " if g == w else "ОШИБКА"
         print(f"  {mark}  ожидалось {w!r:26s} прочитано {g!r}")
 
     torch.save({"state": model.state_dict(), "report": rep,
-                "by_app": by_app, "curve": curve}, args.out)
-    json.dump({"report": rep, "by_app": by_app, "curve": curve},
+                "report_new": rep_new, "by_app": by_app,
+                "curve": curve}, args.out)
+    json.dump({"report_seen": rep, "report_new": rep_new,
+               "by_app": by_app, "curve": curve},
               open(args.out.replace(".pt", ".json"), "w"),
               indent=1, ensure_ascii=False)
     print(f"\nСохранено: {args.out}")

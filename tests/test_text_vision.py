@@ -97,3 +97,46 @@ def test_model_is_small_enough():
     from textvis.model import TextReader
     n = sum(p.numel() for p in TextReader().parameters())
     assert n < 4_000_000, f"модель разрослась: {n:,}"
+
+
+def test_train_and_test_words_never_overlap():
+    """Словари обучения и проверки не должны пересекаться.
+
+    Прошлый прогон провалился именно здесь: 93% проверочных строк дословно
+    встречались в обучении, потеря упала до 0.0067, и «98.5% точности»
+    означали лишь заученный список из 254 слов.
+    """
+    from textvis.vocab import HELD_OUT, TRAIN_WORDS
+    assert not (set(TRAIN_WORDS) & set(HELD_OUT))
+    assert len(HELD_OUT) >= 40, "отложено слишком мало слов"
+    assert len(TRAIN_WORDS) >= 150
+
+
+def test_generated_names_differ_between_splits():
+    """Имена ассетов в проверке должны строиться по другим шаблонам."""
+    from textvis.render_text import _rand_name
+    rng = np.random.default_rng(0)
+    tr = {_rand_name(rng, "train") for _ in range(400)}
+    te = {_rand_name(rng, "test") for _ in range(400)}
+    common = tr & te
+    assert not common, f"совпадающие имена: {list(common)[:5]}"
+
+
+def test_test_split_produces_unseen_text():
+    """Выборка проверки не должна дословно повторять обучающую."""
+    rng_a = np.random.default_rng(1)
+    rng_b = np.random.default_rng(2)
+    train = {render_line(rng_a, split="train").text for _ in range(600)}
+    test = [render_line(rng_b, split="test").text for _ in range(600)]
+    leak = sum(1 for t in test if t in train) / len(test)
+    assert leak < 0.15, f"утечка {leak * 100:.0f}% строк проверки"
+
+
+def test_random_text_is_a_big_share():
+    """Случайных строк должно быть много: на них нечего заучивать."""
+    from textvis.vocab import APPS
+    rng = np.random.default_rng(3)
+    words = {w for lst in APPS.values() for w in lst}
+    texts = [render_line(rng, split="train").text for _ in range(500)]
+    rand = sum(1 for t in texts if t not in words) / len(texts)
+    assert rand > 0.45, f"случайного текста лишь {rand * 100:.0f}%"

@@ -130,7 +130,22 @@ APPS = {
     "blockbench": BLOCKBENCH, "browser": BROWSER, "explorer": EXPLORER,
 }
 
-# Плоский список всех надписей — классы для головы «узнать подпись целиком».
-LABELS = sorted({t for lst in APPS.values() for t in lst})
+# -- разделение словаря ----------------------------------------------------
+# Каждая пятая надпись откладывается в проверку и НИКОГДА не показывается
+# при обучении. Без этого проверка спрашивает ровно то, что показывала:
+# в прошлом прогоне 93% проверочных строк дословно встречались в обучении,
+# потеря упала до 0.0067, а «98.5% точности» означали лишь заученный
+# список из 254 слов. Читать по буквам модель при этом не научилась.
+_ALL = sorted({t for lst in APPS.values() for t in lst})
+HELD_OUT = [t for i, t in enumerate(_ALL) if i % 5 == 2]
+TRAIN_WORDS = [t for t in _ALL if t not in set(HELD_OUT)]
+
+APPS_TRAIN = {k: [t for t in v if t in set(TRAIN_WORDS)]
+              for k, v in APPS.items()}
+APPS_TEST = {k: [t for t in v if t in set(HELD_OUT)]
+             for k, v in APPS.items()}
+
+# Классы головы «узнать подпись целиком» — только обучающая часть.
+LABELS = TRAIN_WORDS
 LABEL_ID = {t: i for i, t in enumerate(LABELS)}
 N_LABELS = len(LABELS)

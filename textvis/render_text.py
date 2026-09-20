@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-from .vocab import APPS
+from .vocab import ALPHABET, APPS, APPS_TEST, APPS_TRAIN
 
 FONTS = Path(__file__).resolve().parent.parent / "assets" / "fonts"
 
@@ -69,35 +69,81 @@ class TextSample:
     font_px: int
 
 
-def _pick_text(rng, app: str | None = None) -> tuple[str, str]:
-    """Берёт надпись: из словаря программы либо генерирует имя/число."""
-    app = app or rng.choice(list(APPS))
+def _rand_name(rng, split: str) -> str:
+    """Случайное имя ассета или файла.
+
+    Шаблоны у обучения и проверки РАЗНЫЕ. Иначе модель заучит десяток
+    сочетаний вроде SM_001 и будет узнавать их целиком, а на живом
+    SM_Rock_Cliff_02 растеряется.
+    """
+    if split == "train":
+        pre = ["SM", "BP", "M", "T", "MI", "SK", "AM", "NS", "WBP"]
+        mid = ["Wall", "Floor", "Door", "Lamp", "Tree", "Rock", "Metal",
+               "Wood", "Glass", "Water", "Sand", "Brick", "Panel", "Pipe"]
+        suf = ["01", "02", "A", "B", "Base", "Inst", "LOD0", "New", "Old"]
+    else:
+        pre = ["SMesh", "Blue", "Mat", "Tex", "Char", "Env", "FX", "UI"]
+        mid = ["Cliff", "Canyon", "Statue", "Bridge", "Fence", "Barrel",
+               "Crate", "Torch", "Banner", "Carpet", "Mirror", "Anvil"]
+        suf = ["03", "07", "C", "D", "Final", "Draft", "LOD2", "Alt"]
+
+    parts = [str(rng.choice(pre))]
+    for _ in range(int(rng.integers(1, 3))):
+        parts.append(str(rng.choice(mid)))
+    if rng.random() < 0.7:
+        parts.append(str(rng.choice(suf)))
+    return "_".join(parts)
+
+
+def _rand_gibberish(rng) -> str:
+    """Просто случайные буквы.
+
+    Самая важная часть выборки: на бессмысленных строках заучивать нечего,
+    остаётся только честно читать символ за символом. Без них сеть быстро
+    скатывается в узнавание слов целиком.
+    """
+    n = int(rng.integers(3, 15))
+    pool = ALPHABET.replace(" ", "")
+    if rng.random() < 0.5:                       # только латиница
+        pool = "".join(c for c in pool if c.isascii())
+    out = []
+    for i in range(n):
+        out.append(str(rng.choice(list(pool))))
+        if rng.random() < 0.08 and 0 < i < n - 1:
+            out.append(" ")
+    return "".join(out)
+
+
+def _pick_text(rng, app: str | None = None,
+               split: str = "train") -> tuple[str, str]:
+    """Берёт надпись: из словаря нужной половины либо генерирует."""
+    table = APPS_TRAIN if split == "train" else APPS_TEST
+    app = app or str(rng.choice([k for k in table if table[k]]))
+    words = table.get(app) or APPS[app]
     r = rng.random()
-    if r < 0.72:
-        words = APPS[app]
+    if r < 0.42:
         return str(words[int(rng.integers(0, len(words)))]), app
-    if r < 0.84:
-        # имя ассета или файла — такого в словаре нет, читается посимвольно
-        pre = ["SM", "BP", "M", "T", "Cube", "Mesh", "Char", "Env", "Anim"]
-        suf = ["001", "002", "_A", "_B", "_Base", "_Inst", "_LOD0", "_new"]
-        return (f"{pre[int(rng.integers(0, len(pre)))]}_"
-                f"{suf[int(rng.integers(0, len(suf)))].lstrip('_')}"), app
-    if r < 0.94:
-        # число в поле свойств
-        return (f"{rng.normal(0, 200):.{int(rng.integers(0, 4))}f}", app)
-    # путь или расширение
-    ext = [".uasset", ".blend", ".bbmodel", ".png", ".fbx", ".txt"]
-    return (f"file{int(rng.integers(1, 99))}"
-            f"{ext[int(rng.integers(0, len(ext)))]}", app)
+    if r < 0.68:
+        return _rand_name(rng, split), app
+    if r < 0.88:
+        return _rand_gibberish(rng), app
+    if r < 0.96:
+        digits = f"{rng.normal(0, 500):.{int(rng.integers(0, 4))}f}"
+        return digits, app
+    ext = ([".uasset", ".blend", ".png", ".fbx"] if split == "train"
+           else [".bbmodel", ".txt", ".jpg", ".obj"])
+    return (f"{_rand_name(rng, split)}{ext[int(rng.integers(0, len(ext)))]}",
+            app)
 
 
 def render_line(rng=None, app: str | None = None,
-                text: str | None = None) -> TextSample:
+                text: str | None = None,
+                split: str = "train") -> TextSample:
     """Рисует одну строку интерфейса со случайным оформлением."""
     if rng is None:
         rng = np.random.default_rng()
     if text is None:
-        text, app = _pick_text(rng, app)
+        text, app = _pick_text(rng, app, split)
     else:
         app = app or "ue5"
 
