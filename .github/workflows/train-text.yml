@@ -1,0 +1,72 @@
+name: Обучение чтению текста
+
+on:
+  workflow_dispatch:
+    inputs:
+      samples:
+        description: "Сколько строк собрать"
+        required: false
+        default: "60000"
+      epochs:
+        description: "Сколько эпох"
+        required: false
+        default: "30"
+      test_samples:
+        description: "Проверочная выборка"
+        required: false
+        default: "4000"
+      batch:
+        description: "Размер батча"
+        required: false
+        default: "96"
+      cores:
+        description: "Потоков"
+        required: false
+        default: "4"
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Зависимости
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy pillow pytest
+      - name: Проверить шрифты
+        run: python -c "from textvis.render_text import fonts_available; print('шрифты:', fonts_available())"
+      - name: Тесты
+        run: python -m pytest tests/ -q
+      - name: Обучение
+        run: |
+          python train_text.py \
+            --samples ${{ inputs.samples }} \
+            --epochs ${{ inputs.epochs }} \
+            --test-samples ${{ inputs.test_samples }} \
+            --batch ${{ inputs.batch }} \
+            --cores ${{ inputs.cores }} \
+            --eval-every 2 \
+            --out text_reader.pt 2>&1 | tee train.log
+      - name: Сводка
+        if: always()
+        run: |
+          {
+            echo "## Чтение текста интерфейса"
+            echo '```'
+            sed -n '/ЧТО МОДЕЛЬ НАУЧИЛАСЬ/,$p' train.log | head -40
+            echo '```'
+          } >> $GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: text-reader-weights
+          path: |
+            text_reader.pt
+            text_reader.json
+            train.log
+          retention-days: 30

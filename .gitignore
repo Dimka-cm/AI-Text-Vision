@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+*.pt
+!text_reader.pt
